@@ -4,18 +4,75 @@ import { storage } from "./storage.js";
 import { api } from "../shared/routes.js";
 import { z } from "zod";
 import OpenAI from "openai";
-
-const DEMO_USER_ID = 1;
+import bcrypt from "bcrypt";
+import { users } from "../shared/schema.js";
+import { db } from "./db.js";
+import { eq } from "drizzle-orm";
+import { generateToken } from "./auth.js";
+import { requireAuth } from "./middleware.js";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
-  app.post(api.notes.create.path, async (req, res) => {
+  // ==========================
+  // SIGNUP
+  // ==========================
+  app.post("/api/signup", async (req, res) => {
+
+    const { email, password } = req.body;
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const [user] = await db.insert(users)
+      .values({ email, passwordHash })
+      .returning();
+
+    const token = generateToken(user.id);
+
+    res.json({ token });
+
+  });
+
+  // ==========================
+  // LOGIN
+  // ==========================
+  app.post("/api/login", async (req, res) => {
+
+    const { email, password } = req.body;
+
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    if (!user)
+      return res.status(401).json({ error: "Invalid credentials" });
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+
+    if (!valid)
+      return res.status(401).json({ error: "Invalid credentials" });
+
+    const token = generateToken(user.id);
+
+    res.json({ token });
+
+  });
+
+  // ==========================
+  // CREATE NOTE
+  // ==========================
+  app.post(api.notes.create.path, requireAuth, async (req, res) => {
+
     try {
 
+      const userId = (req as any).userId;
       const input = api.notes.create.input.parse(req.body);
-      const note = await storage.createNote(DEMO_USER_ID,input);
+
+      const note = await storage.createNote(userId, input);
 
       const defaultQuestion = {
+        userId,
         noteId: note.id,
         questionText: "What is the key idea of this note?",
         answerText: input.content,
@@ -26,9 +83,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       };
 
       try {
-
-        console.log("🧠 AI_MODE:", process.env.AI_MODE);
-        console.log("🔑 KEY PRESENT:", !!process.env.OPENROUTER_API_KEY);
 
         if (process.env.AI_MODE === "true" && process.env.OPENROUTER_API_KEY) {
 
@@ -44,12 +98,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 {
                   role: "system",
                   content: `
-You are a flashcard generator.
+Generate 1 to 3 recall questions from the study note.
 
-From the given study note:
-Generate 1 to 3 recall questions.
-
-Return STRICT JSON in this format:
+Return STRICT JSON:
 
 {
   "questions": [
@@ -59,10 +110,6 @@ Return STRICT JSON in this format:
     }
   ]
 }
-
-DO NOT explain.
-DO NOT use markdown.
-DO NOT write anything outside JSON.
 `
                 },
                 { role: "user", content: input.content }
@@ -80,7 +127,6 @@ DO NOT write anything outside JSON.
           );
 
           const raw = response.choices?.[0]?.message?.content;
-          console.log("🧠 RAW:", raw);
 
           if (!raw) {
             await storage.createQuestions([defaultQuestion]);
@@ -91,17 +137,15 @@ DO NOT write anything outside JSON.
             try {
               parsed = JSON.parse(raw);
             } catch {
-
               const match = raw.match(/\{[\s\S]*\}/);
-              if (!match) {
-                throw new Error("AI returned non JSON");
-              }
+              if (!match) throw new Error("Bad JSON");
               parsed = JSON.parse(match[0]);
             }
 
             if (parsed?.questions?.length) {
 
               const toInsert = parsed.questions.map((q: any) => ({
+                userId,
                 noteId: note.id,
                 questionText: q.questionText ?? defaultQuestion.questionText,
                 answerText: q.answerText ?? defaultQuestion.answerText,
@@ -112,20 +156,17 @@ DO NOT write anything outside JSON.
               }));
 
               await storage.createQuestions(toInsert);
-            }
-            else {
+
+            } else {
               await storage.createQuestions([defaultQuestion]);
             }
           }
 
-        }
-        else {
+        } else {
           await storage.createQuestions([defaultQuestion]);
         }
 
-      }
-      catch (aiError) {
-        console.error("🚨 AI FAILED:", aiError);
+      } catch {
         await storage.createQuestions([defaultQuestion]);
       }
 
@@ -133,8 +174,6 @@ DO NOT write anything outside JSON.
 
     }
     catch (err) {
-
-      console.error("Create note error:", err);
 
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
@@ -144,26 +183,42 @@ DO NOT write anything outside JSON.
     }
   });
 
-  app.get(api.notes.list.path, async (_req, res) => {
-    const notesList = await storage.getNotes(DEMO_USER_ID);
+  // ==========================
+  // LIST NOTES
+  // ==========================
+  app.get(api.notes.list.path, requireAuth, async (req, res) => {
+
+    const userId = (req as any).userId;
+
+    const notesList = await storage.getNotes(userId);
     res.json(notesList);
   });
 
-  app.get(api.questions.getDaily.path, async (_req, res) => {
-    const q = await storage.getDailyQuestion(DEMO_USER_ID);
+  // ==========================
+  // DAILY QUESTION
+  // ==========================
+  app.get(api.questions.getDaily.path, requireAuth, async (req, res) => {
+
+    const userId = (req as any).userId;
+
+    const q = await storage.getDailyQuestion(userId);
     res.json(q || null);
   });
 
-  app.post(api.questions.review.path, async (req, res) => {
+  // ==========================
+  // REVIEW
+  // ==========================
+  app.post(api.questions.review.path, requireAuth, async (req, res) => {
+
     try {
 
+      const userId = (req as any).userId;
       const id = Number(req.params.id);
       const input = api.questions.review.input.parse(req.body);
 
-      const question = await storage.getQuestion(DEMO_USER_ID,id);
-      if (!question) {
-        return res.status(404).json({ message: "Question not found" });
-      }
+      const question = await storage.getQuestion(userId, id);
+      if (!question)
+        return res.status(404).json({ message: "Not found" });
 
       let { interval, easeFactor, repetitions } = question;
       const quality = input.quality;
@@ -173,8 +228,7 @@ DO NOT write anything outside JSON.
         else if (repetitions === 1) interval = 6;
         else interval = Math.round(interval * easeFactor);
         repetitions += 1;
-      }
-      else {
+      } else {
         repetitions = 0;
         interval = 1;
       }
@@ -186,7 +240,7 @@ DO NOT write anything outside JSON.
       nextReviewDate.setDate(nextReviewDate.getDate() + interval);
 
       const updated = await storage.updateQuestionReview(
-        DEMO_USER_ID,
+        userId,
         id,
         interval,
         easeFactor,
@@ -196,17 +250,23 @@ DO NOT write anything outside JSON.
 
       res.json(updated);
 
-    }
-    catch (err) {
-      if (err instanceof z.ZodError) {
+    } catch (err) {
+
+      if (err instanceof z.ZodError)
         return res.status(400).json({ message: err.errors[0].message });
-      }
-      return res.status(500).json({ message: "Internal error reviewing question" });
+
+      return res.status(500).json({ message: "Internal error" });
     }
   });
 
-  app.get(api.questions.status.path, async (_req, res) => {
-    const status = await storage.getMemoryStatus(DEMO_USER_ID);
+  // ==========================
+  // MEMORY STATUS
+  // ==========================
+  app.get(api.questions.status.path, requireAuth, async (req, res) => {
+
+    const userId = (req as any).userId;
+
+    const status = await storage.getMemoryStatus(userId);
     res.json(status);
   });
 
