@@ -1,24 +1,17 @@
 {
-  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "dist/server",
+    "outDir": "./dist",
+    "rootDir": ".",
+    "noEmit": false,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "noEmit": false,
-    "rootDir": ".",
-    "baseUrl": ".",
-    "paths": {
-      "@shared/*": ["shared/*"]
-    }
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false
   },
   "include": [
     "server/**/*",
     "shared/**/*"
-  ],
-  "exclude": [
-    "client",
-    "node_modules",
-    "vite.config.ts"
   ]
 }

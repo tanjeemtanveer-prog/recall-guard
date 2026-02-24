@@ -10,16 +10,18 @@ export const notes = pgTable("notes", {
 
 export const questions = pgTable("questions", {
   id: serial("id").primaryKey(),
-  noteId: integer("note_id").references(() => notes.id),
+  noteId: integer("note_id").notNull(),
   questionText: text("question_text").notNull(),
   answerText: text("answer_text").notNull(),
-  nextReviewDate: timestamp("next_review_date").defaultNow().notNull(),
-  interval: integer("interval").default(0).notNull(),
-  easeFactor: real("ease_factor").default(2.5).notNull(),
-  repetitions: integer("repetitions").default(0).notNull(),
+  interval: integer("interval").notNull(),
+  easeFactor: real("ease_factor").notNull(),
+  repetitions: integer("repetitions").notNull(),
+  nextReviewDate: timestamp("next_review_date").notNull()
 });
 
-export const insertNoteSchema = createInsertSchema(notes).pick({ content: true });
+export const insertNoteSchema = z.object({
+  content: z.string().min(1)
+});
 
 export type Note = typeof notes.$inferSelect;
 export type InsertNote = z.infer<typeof insertNoteSchema>;

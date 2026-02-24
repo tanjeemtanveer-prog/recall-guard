@@ -5,7 +5,7 @@ import { registerRoutes } from "./routes.js";
 import { serveStatic } from "./static.js";
 import { createServer } from "http";
 
-console.log(process.env.DATABASE_URL);
+
 const app = express();
 const httpServer = createServer(app);
 
