@@ -1,5 +1,5 @@
-import { db } from "./db";
-import { notes, questions, type CreateNoteRequest, type ReviewRequest, type Note, type Question } from "@shared/schema";
+import { db } from "./db.js";
+import { notes, questions, type CreateNoteRequest, type ReviewRequest, type Note, type Question } from "../shared/schema.js";
 import { eq, lte, gt, asc } from "drizzle-orm";
 
 export interface IStorage {

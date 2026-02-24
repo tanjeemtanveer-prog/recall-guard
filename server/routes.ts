@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
-import { storage } from "./storage";
-import { api } from "@shared/routes";
+import { storage } from "./storage.js";
+import { api } from "../shared/routes.js";
 import { z } from "zod";
 import OpenAI from "openai";
 
@@ -32,15 +32,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
           const openai = new OpenAI({
             apiKey: process.env.OPENROUTER_API_KEY,
-            baseURL: "https://openrouter.ai/api/v1",
+            baseURL: "https://openrouter.ai/api/v1"
           });
 
-          const response = await openai.chat.completions.create({
-            model: "mistralai/mistral-7b-instruct",
-            messages: [
-              {
-                role: "system",
-                content: `
+          const response = await openai.chat.completions.create(
+            {
+              model: "mistralai/mistral-7b-instruct",
+              messages: [
+                {
+                  role: "system",
+                  content: `
 You are a flashcard generator.
 
 From the given study note:
@@ -61,34 +62,34 @@ DO NOT explain.
 DO NOT use markdown.
 DO NOT write anything outside JSON.
 `
-              },
-              { role: "user", content: input.content }
-            ],
-            response_format: { type: "json_object" },
-            temperature: 0.2,
-            max_tokens: 200,
-            extra_headers: {
-              "HTTP-Referer": "http://localhost:5173",
-              "X-Title": "RecallGuard"
+                },
+                { role: "user", content: input.content }
+              ],
+              response_format: { type: "json_object" },
+              temperature: 0.2,
+              max_tokens: 200
+            },
+            {
+              headers: {
+                "HTTP-Referer": process.env.APP_URL || "http://localhost:5173",
+                "X-Title": "RecallGuard"
+              }
             }
-          });
+          );
 
           const raw = response.choices?.[0]?.message?.content;
           console.log("🧠 RAW:", raw);
 
           if (!raw) {
             await storage.createQuestions([defaultQuestion]);
-          }
-          else {
+          } else {
 
-            let parsed;
+            let parsed: any;
 
             try {
               parsed = JSON.parse(raw);
-            }
-            catch {
+            } catch {
 
-              // 🛡 fallback if model adds text around JSON
               const match = raw.match(/\{[\s\S]*\}/);
               if (!match) {
                 throw new Error("AI returned non JSON");
@@ -141,12 +142,12 @@ DO NOT write anything outside JSON.
     }
   });
 
-  app.get(api.notes.list.path, async (req, res) => {
+  app.get(api.notes.list.path, async (_req, res) => {
     const notesList = await storage.getNotes();
     res.json(notesList);
   });
 
-  app.get(api.questions.getDaily.path, async (req, res) => {
+  app.get(api.questions.getDaily.path, async (_req, res) => {
     const q = await storage.getDailyQuestion();
     res.json(q || null);
   });
@@ -201,7 +202,7 @@ DO NOT write anything outside JSON.
     }
   });
 
-  app.get(api.questions.status.path, async (req, res) => {
+  app.get(api.questions.status.path, async (_req, res) => {
     const status = await storage.getMemoryStatus();
     res.json(status);
   });

@@ -25,7 +25,7 @@ async function test() {
         content:
           "Photosynthesis is the process by which green plants convert sunlight into chemical energy using chlorophyll."
       }
-    ],
+    ]},{
     response_format: { type: "json_object" },
     extra_headers: {
       "HTTP-Referer": "http://localhost:5173",

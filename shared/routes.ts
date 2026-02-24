@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { insertNoteSchema, questions, notes } from "./schema";
+import { insertNoteSchema, questions, notes } from "./schema.js";
 
 export const errorSchemas = {
   validation: z.object({ message: z.string() }),
