@@ -1,37 +1,43 @@
 import { db } from "./db.js";
-import { desc, eq, lt, sql } from "drizzle-orm";
+import { desc, eq, lt, sql, and } from "drizzle-orm";
 import { notes, questions } from "../shared/schema.js";
 import type { CreateNoteRequest, Note, Question } from "../shared/schema.js";
 
 function now() {
-  return new Date();
-}
-
-function tomorrow() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return d;
-}
+  return new Date();}
 
 export const storage = {
-  // ✅ Create Note
-  async createNote(insertNote: CreateNoteRequest): Promise<Note> {
-    // Zod validated, but TS can't always prove in build mode → assert required
-    const safeInsert = { content: insertNote.content! };
 
-    const [note] = await db.insert(notes).values(safeInsert).returning();
+  // ✅ Create Note (NOW USER OWNED)
+  async createNote(userId: number, insertNote: CreateNoteRequest): Promise<Note> {
+
+    const [note] = await db
+      .insert(notes)
+      .values({
+        userId,
+        content: insertNote.content
+      })
+      .returning();
+
     return note as Note;
   },
 
-  // ✅ List notes
-  async getNotes(): Promise<Note[]> {
-    const all = await db.select().from(notes).orderBy(desc(notes.createdAt));
+  // ✅ List Notes per user
+  async getNotes(userId: number): Promise<Note[]> {
+
+    const all = await db
+      .select()
+      .from(notes)
+      .where(eq(notes.userId, userId))
+      .orderBy(desc(notes.createdAt));
+
     return all as Note[];
   },
 
-  // ✅ Create questions (FIXED)
+  // ✅ Create Questions (NOW USER OWNED)
   async createQuestions(
     items: Array<{
+      userId: number;
       noteId: number;
       questionText: string;
       answerText: string;
@@ -39,11 +45,13 @@ export const storage = {
       easeFactor?: number;
       repetitions?: number;
       nextReviewDate?: Date;
-    }>,
+    }>
   ): Promise<void> {
+
     if (!items.length) return;
 
     const normalized = items.map((q) => ({
+      userId: q.userId,
       noteId: q.noteId,
       questionText: q.questionText,
       answerText: q.answerText,
@@ -56,34 +64,53 @@ export const storage = {
     await db.insert(questions).values(normalized);
   },
 
-  // ✅ Get daily question (the earliest due question)
-  async getDailyQuestion(): Promise<Question | null> {
+  // ✅ Get daily question per user
+  async getDailyQuestion(userId: number): Promise<Question | null> {
+
     const today = now();
 
     const [q] = await db
       .select()
       .from(questions)
-      .where(lt(questions.nextReviewDate, today))
+      .where(
+        and(
+          eq(questions.userId, userId),
+          lt(questions.nextReviewDate, today)
+        )
+      )
       .orderBy(questions.nextReviewDate)
       .limit(1);
 
     return (q ?? null) as Question | null;
   },
 
-  // ✅ Get one question
-  async getQuestion(id: number): Promise<Question | null> {
-    const [q] = await db.select().from(questions).where(eq(questions.id, id)).limit(1);
+  // ✅ Get one question per user
+  async getQuestion(userId: number, id: number): Promise<Question | null> {
+
+    const [q] = await db
+      .select()
+      .from(questions)
+      .where(
+        and(
+          eq(questions.userId, userId),
+          eq(questions.id, id)
+        )
+      )
+      .limit(1);
+
     return (q ?? null) as Question | null;
   },
 
-  // ✅ Update review fields
+  // ✅ Update review per user
   async updateQuestionReview(
+    userId: number,
     id: number,
     interval: number,
     easeFactor: number,
     repetitions: number,
     nextReviewDate: Date,
   ): Promise<Question> {
+
     const [updated] = await db
       .update(questions)
       .set({
@@ -92,14 +119,20 @@ export const storage = {
         repetitions,
         nextReviewDate,
       })
-      .where(eq(questions.id, id))
+      .where(
+        and(
+          eq(questions.userId, userId),
+          eq(questions.id, id)
+        )
+      )
       .returning();
 
     return updated as Question;
   },
 
-  // ✅ Memory status
-  async getMemoryStatus(): Promise<{ safe: number; unstable: number }> {
+  // ✅ Memory status per user
+  async getMemoryStatus(userId: number): Promise<{ safe: number; unstable: number }> {
+
     const today = now();
 
     const result = await db
@@ -107,7 +140,8 @@ export const storage = {
         safe: sql<number>`sum(case when ${questions.nextReviewDate} > ${today} then 1 else 0 end)`,
         unstable: sql<number>`sum(case when ${questions.nextReviewDate} <= ${today} then 1 else 0 end)`,
       })
-      .from(questions);
+      .from(questions)
+      .where(eq(questions.userId, userId));
 
     return {
       safe: Number(result[0]?.safe ?? 0),

@@ -5,13 +5,15 @@ import { api } from "../shared/routes.js";
 import { z } from "zod";
 import OpenAI from "openai";
 
+const DEMO_USER_ID = 1;
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
   app.post(api.notes.create.path, async (req, res) => {
     try {
 
       const input = api.notes.create.input.parse(req.body);
-      const note = await storage.createNote(input);
+      const note = await storage.createNote(DEMO_USER_ID,input);
 
       const defaultQuestion = {
         noteId: note.id,
@@ -143,12 +145,12 @@ DO NOT write anything outside JSON.
   });
 
   app.get(api.notes.list.path, async (_req, res) => {
-    const notesList = await storage.getNotes();
+    const notesList = await storage.getNotes(DEMO_USER_ID);
     res.json(notesList);
   });
 
   app.get(api.questions.getDaily.path, async (_req, res) => {
-    const q = await storage.getDailyQuestion();
+    const q = await storage.getDailyQuestion(DEMO_USER_ID);
     res.json(q || null);
   });
 
@@ -158,7 +160,7 @@ DO NOT write anything outside JSON.
       const id = Number(req.params.id);
       const input = api.questions.review.input.parse(req.body);
 
-      const question = await storage.getQuestion(id);
+      const question = await storage.getQuestion(DEMO_USER_ID,id);
       if (!question) {
         return res.status(404).json({ message: "Question not found" });
       }
@@ -184,6 +186,7 @@ DO NOT write anything outside JSON.
       nextReviewDate.setDate(nextReviewDate.getDate() + interval);
 
       const updated = await storage.updateQuestionReview(
+        DEMO_USER_ID,
         id,
         interval,
         easeFactor,
@@ -203,7 +206,7 @@ DO NOT write anything outside JSON.
   });
 
   app.get(api.questions.status.path, async (_req, res) => {
-    const status = await storage.getMemoryStatus();
+    const status = await storage.getMemoryStatus(DEMO_USER_ID);
     res.json(status);
   });
 
