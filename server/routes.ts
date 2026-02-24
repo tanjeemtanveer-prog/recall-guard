@@ -5,47 +5,139 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import OpenAI from "openai";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
-
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+
   app.post(api.notes.create.path, async (req, res) => {
     try {
+
       const input = api.notes.create.input.parse(req.body);
       const note = await storage.createNote(input);
-      
-      // Generate questions from the note using OpenAI
+
+      const defaultQuestion = {
+        noteId: note.id,
+        questionText: "What is the key idea of this note?",
+        answerText: input.content,
+        interval: 1,
+        easeFactor: 2.5,
+        repetitions: 0,
+        nextReviewDate: new Date()
+      };
+
       try {
-        const response = await openai.chat.completions.create({
-          model: "gpt-5.1",
-          messages: [
-            { role: "system", content: "You are a learning assistant. Extract 1 to 3 key recall questions and precise answers from the provided text. Return JSON as { \"questions\": [ { \"questionText\": \"...\", \"answerText\": \"...\" } ] }." },
-            { role: "user", content: input.content }
-          ],
-          response_format: { type: "json_object" }
-        });
-        
-        const result = JSON.parse(response.choices[0]?.message?.content || "{}");
-        if (result.questions && Array.isArray(result.questions)) {
-          const toInsert = result.questions.map((q: any) => ({
-            noteId: note.id,
-            questionText: q.questionText,
-            answerText: q.answerText
-          }));
-          await storage.createQuestions(toInsert);
+
+        console.log("🧠 AI_MODE:", process.env.AI_MODE);
+        console.log("🔑 KEY PRESENT:", !!process.env.OPENROUTER_API_KEY);
+
+        if (process.env.AI_MODE === "true" && process.env.OPENROUTER_API_KEY) {
+
+          const openai = new OpenAI({
+            apiKey: process.env.OPENROUTER_API_KEY,
+            baseURL: "https://openrouter.ai/api/v1",
+          });
+
+          const response = await openai.chat.completions.create({
+            model: "mistralai/mistral-7b-instruct",
+            messages: [
+              {
+                role: "system",
+                content: `
+You are a flashcard generator.
+
+From the given study note:
+Generate 1 to 3 recall questions.
+
+Return STRICT JSON in this format:
+
+{
+  "questions": [
+    {
+      "questionText": "...",
+      "answerText": "..."
+    }
+  ]
+}
+
+DO NOT explain.
+DO NOT use markdown.
+DO NOT write anything outside JSON.
+`
+              },
+              { role: "user", content: input.content }
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0.2,
+            max_tokens: 200,
+            extra_headers: {
+              "HTTP-Referer": "http://localhost:5173",
+              "X-Title": "RecallGuard"
+            }
+          });
+
+          const raw = response.choices?.[0]?.message?.content;
+          console.log("🧠 RAW:", raw);
+
+          if (!raw) {
+            await storage.createQuestions([defaultQuestion]);
+          }
+          else {
+
+            let parsed;
+
+            try {
+              parsed = JSON.parse(raw);
+            }
+            catch {
+
+              // 🛡 fallback if model adds text around JSON
+              const match = raw.match(/\{[\s\S]*\}/);
+              if (!match) {
+                throw new Error("AI returned non JSON");
+              }
+              parsed = JSON.parse(match[0]);
+            }
+
+            if (parsed?.questions?.length) {
+
+              const toInsert = parsed.questions.map((q: any) => ({
+                noteId: note.id,
+                questionText: q.questionText ?? defaultQuestion.questionText,
+                answerText: q.answerText ?? defaultQuestion.answerText,
+                interval: 1,
+                easeFactor: 2.5,
+                repetitions: 0,
+                nextReviewDate: new Date()
+              }));
+
+              await storage.createQuestions(toInsert);
+            }
+            else {
+              await storage.createQuestions([defaultQuestion]);
+            }
+          }
+
         }
-      } catch (aiError) {
-        console.error("AI Error:", aiError);
+        else {
+          await storage.createQuestions([defaultQuestion]);
+        }
+
       }
-      
+      catch (aiError) {
+        console.error("🚨 AI FAILED:", aiError);
+        await storage.createQuestions([defaultQuestion]);
+      }
+
       res.status(201).json(note);
-    } catch (err) {
+
+    }
+    catch (err) {
+
+      console.error("Create note error:", err);
+
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
-      throw err;
+
+      return res.status(500).json({ message: "Internal error creating note" });
     }
   });
 
@@ -61,28 +153,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post(api.questions.review.path, async (req, res) => {
     try {
+
       const id = Number(req.params.id);
       const input = api.questions.review.input.parse(req.body);
-      
+
       const question = await storage.getQuestion(id);
       if (!question) {
         return res.status(404).json({ message: "Question not found" });
       }
 
-      // SM-2 Algorithm implementation
       let { interval, easeFactor, repetitions } = question;
       const quality = input.quality;
 
       if (quality >= 3) {
-        if (repetitions === 0) {
-          interval = 1;
-        } else if (repetitions === 1) {
-          interval = 6;
-        } else {
-          interval = Math.round(interval * easeFactor);
-        }
+        if (repetitions === 0) interval = 1;
+        else if (repetitions === 1) interval = 6;
+        else interval = Math.round(interval * easeFactor);
         repetitions += 1;
-      } else {
+      }
+      else {
         repetitions = 0;
         interval = 1;
       }
@@ -93,13 +182,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const nextReviewDate = new Date();
       nextReviewDate.setDate(nextReviewDate.getDate() + interval);
 
-      const updated = await storage.updateQuestionReview(id, interval, easeFactor, repetitions, nextReviewDate);
+      const updated = await storage.updateQuestionReview(
+        id,
+        interval,
+        easeFactor,
+        repetitions,
+        nextReviewDate
+      );
+
       res.json(updated);
-    } catch (err) {
+
+    }
+    catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
-      throw err;
+      return res.status(500).json({ message: "Internal error reviewing question" });
     }
   });
 
@@ -107,25 +205,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const status = await storage.getMemoryStatus();
     res.json(status);
   });
-
-  // Seed data
-  setTimeout(async () => {
-    try {
-      const existing = await storage.getNotes();
-      if (existing.length === 0) {
-        const note = await storage.createNote({ content: "The mitochondria is the powerhouse of the cell. It generates most of the chemical energy needed to power the cell's biochemical reactions." });
-        await storage.createQuestions([
-          {
-            noteId: note.id,
-            questionText: "What is the function of the mitochondria?",
-            answerText: "It generates most of the chemical energy needed to power the cell's biochemical reactions."
-          }
-        ]);
-      }
-    } catch (e) {
-      console.error("Seed error:", e);
-    }
-  }, 1000);
 
   return httpServer;
 }
